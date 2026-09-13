@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "id": "dj.youtube-music",
+  "name": "YouTube Music",
+  "version": "0.1.0",
+  "author": "DJ",
+  "license": "MIT",
+  "description": "Control an active YouTube Music browser player from the Omarchy bar.",
+  "homepage": "https://github.com/codexjdub/omarchy-youtube-music",
+  "repository": "https://github.com/codexjdub/omarchy-youtube-music",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "YouTube Music",
+    "description": "YouTube Music now-playing, playback controls, artwork, and seeking.",
+    "category": "Media",
+    "aliases": ["youtube", "ytmusic", "music"],
+    "allowMultiple": false,
+    "defaultSection": "left",
+    "defaults": {
+      "showTitle": true,
+      "maxTitleWidth": 180,
+      "showWhenIdle": true,
+      "browserFallback": true
+    },
+    "schema": [
+      {
+        "key": "showTitle",
+        "type": "boolean",
+        "label": "Show track title",
+        "defaultValue": true
+      },
+      {
+        "key": "maxTitleWidth",
+        "type": "integer",
+        "label": "Maximum title width",
+        "min": 80,
+        "max": 320,
+        "step": 20,
+        "defaultValue": 180
+      },
+      {
+        "key": "showWhenIdle",
+        "type": "boolean",
+        "label": "Show when idle",
+        "defaultValue": true
+      },
+      {
+        "key": "browserFallback",
+        "type": "boolean",
+        "label": "Detect browser players without a URL",
+        "description": "Use album metadata to identify YouTube Music when Chromium does not expose the tab URL.",
+        "defaultValue": true
+      }
+    ]
+  }
+}
