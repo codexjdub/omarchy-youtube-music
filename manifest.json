@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "author": "DJ",
   "license": "MIT",
-  "description": "Control an active YouTube Music browser player from the Omarchy bar.",
+  "description": "Launch YouTube Music in an isolated app window and control playback from the Omarchy bar.",
   "homepage": "https://github.com/codexjdub/omarchy-youtube-music",
   "repository": "https://github.com/codexjdub/omarchy-youtube-music",
   "kinds": ["bar-widget"],
@@ -23,19 +23,27 @@
       "showTitle": true,
       "maxTitleWidth": 180,
       "showWhenIdle": true,
-      "browserFallback": true
+      "browserFallback": true,
+      "isolatedProfile": true
     },
     "schema": [
       {
+        "key": "isolatedProfile",
+        "type": "boolean",
+        "label": "Use an isolated browser profile",
+        "description": "Keep YouTube Music logins, cookies, and history separate from normal browsing. Turn off to share the browser profile.",
+        "defaultValue": true
+      },
+      {
         "key": "showTitle",
         "type": "boolean",
-        "label": "Show track title",
+        "label": "Show song title and artist",
         "defaultValue": true
       },
       {
         "key": "maxTitleWidth",
         "type": "integer",
-        "label": "Maximum title width",
+        "label": "Maximum song and artist width",
         "min": 80,
         "max": 320,
         "step": 20,

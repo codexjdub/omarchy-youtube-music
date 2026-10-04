@@ -1,27 +1,35 @@
 import QtQuick
 import QtQuick.Layouts
-import Quickshell
+import Quickshell.Io
+import Quickshell.Hyprland
 import Quickshell.Services.Mpris
 import qs.Commons
-import qs.Ui
+import qs.Ui as Ui
+import "PlaybackModel.js" as PlaybackModel
 
-Panel {
+Ui.Panel {
   id: root
   moduleName: "dj.youtube-music"
   ipcTarget: "dj.youtube-music"
 
   readonly property var players: Mpris.players ? Mpris.players.values : []
+  readonly property var appWindows: Hyprland.toplevels.values
+  property var appPlayerPids: []
   property var player: null
 
   readonly property bool showTitle: setting("showTitle", true)
   readonly property int maxTitleWidth: Math.max(80, Number(setting("maxTitleWidth", 180)))
   readonly property bool showWhenIdle: setting("showWhenIdle", true)
   readonly property bool browserFallback: setting("browserFallback", true)
+  readonly property bool isolatedProfile: setting("isolatedProfile", true)
+  readonly property bool vertical: bar ? bar.vertical : false
+  property string launchError: ""
 
   readonly property bool playing: player && player.playbackState === MprisPlaybackState.Playing
   readonly property string artUrl: player ? (player.trackArtUrl || player.artUrl || "") : ""
   readonly property string artistName: player ? (player.trackArtist || "") : ""
   readonly property string trackTitle: player ? (player.trackTitle || "Untitled track") : ""
+  readonly property string barLabel: trackTitle + (artistName ? " — " + artistName : "")
   readonly property string albumName: player ? (player.trackAlbum || "") : ""
   readonly property color contentForeground: bar ? bar.foreground : Color.foreground
   readonly property color dimForeground: Qt.darker(contentForeground, 1.45)
@@ -32,56 +40,39 @@ Panel {
   implicitWidth: visible ? controls.implicitWidth : 0
   implicitHeight: bar ? bar.barSize : Style.bar.sizeHorizontal
 
-  function isBrowser(candidate) {
-    var identity = String(candidate && candidate.identity || "").toLowerCase()
-    var desktopEntry = String(candidate && candidate.desktopEntry || "").toLowerCase()
-    var value = identity + " " + desktopEntry
-    return value.indexOf("chrome") !== -1
-      || value.indexOf("chromium") !== -1
-      || value.indexOf("brave") !== -1
-      || value.indexOf("firefox") !== -1
-      || value.indexOf("zen") !== -1
-      || value.indexOf("vivaldi") !== -1
-      || value.indexOf("edge") !== -1
-  }
-
-  function isYoutubeMusic(candidate) {
-    if (!candidate) return false
-    var metadata = candidate.metadata || {}
-    var identity = String(candidate.identity || "").toLowerCase()
-    var desktopEntry = String(candidate.desktopEntry || "").toLowerCase()
-    var url = String(metadata["xesam:url"] || "").toLowerCase()
-    var art = String(candidate.trackArtUrl || candidate.artUrl || "").toLowerCase()
-
-    if (identity.indexOf("youtube music") !== -1) return true
-    if (desktopEntry.indexOf("youtube-music") !== -1 || desktopEntry.indexOf("ytmusic") !== -1) return true
-    if (url.indexOf("music.youtube.com") !== -1) return true
-
-    if (!browserFallback || !isBrowser(candidate)) return false
-
-    // Chromium may omit xesam:url. YouTube Music normally provides album
-    // metadata and artwork hosted by YouTube/Google, unlike a regular video.
-    var album = String(metadata["xesam:album"] || candidate.trackAlbum || "")
-    return album !== ""
-      || art.indexOf("ytimg.com") !== -1
-      || art.indexOf("googleusercontent.com") !== -1
-  }
-
   function selectPlayer() {
-    var firstMatch = null
+    player = PlaybackModel.select(players, player, browserFallback, appPlayerPids)
+  }
 
-    for (var i = 0; i < players.length; i++) {
-      var candidate = players[i]
-      if (!isYoutubeMusic(candidate)) continue
-      if (!firstMatch) firstMatch = candidate
-      if (candidate.isPlaying) {
-        player = candidate
-        return
-      }
+  function updateAppPlayerPids() {
+    appPlayerPids = PlaybackModel.appPids(appWindows.map(function(window) {
+      return window.lastIpcObject
+    }))
+  }
+
+  // Hyprland's complete window records are refreshed on request. A newly
+  // opened app otherwise has no PID/class in lastIpcObject until shell restart.
+  Timer {
+    id: windowInfoTimer
+    interval: 80
+    onTriggered: Hyprland.refreshToplevels()
+  }
+
+  Connections {
+    target: Hyprland
+    function onRawEvent(event) {
+      if (["openwindow", "closewindow", "windowtitle", "windowtitlev2"].indexOf(event.name) !== -1)
+        windowInfoTimer.restart()
     }
+  }
 
-    if (player && players.indexOf(player) !== -1 && isYoutubeMusic(player)) return
-    player = firstMatch
+  Instantiator {
+    model: root.appWindows
+    delegate: Connections {
+      required property var modelData
+      target: modelData
+      function onLastIpcObjectChanged() { root.updateAppPlayerPids() }
+    }
   }
 
   function togglePlayback() {
@@ -99,8 +90,63 @@ Panel {
     if (player && player.canGoNext) player.next()
   }
 
+  IpcHandler {
+    enabled: root.manageIpc
+    target: root.ipcTarget + ".controls"
+
+    function status(): string {
+      return JSON.stringify({
+        appPids: root.appPlayerPids,
+        selected: root.player ? root.player.dbusName : "",
+        label: root.barLabel,
+        players: root.players.map(function(candidate) {
+          return {
+            name: candidate.dbusName,
+            title: candidate.trackTitle,
+            artist: candidate.trackArtist,
+            playing: candidate.isPlaying,
+            matchScore: PlaybackModel.score(candidate, root.browserFallback, root.appPlayerPids),
+            canPlay: candidate.canPlay,
+            canPause: candidate.canPause,
+            canGoNext: candidate.canGoNext,
+            canGoPrevious: candidate.canGoPrevious
+          }
+        })
+      })
+    }
+
+    function playPause(): void { root.togglePlayback() }
+    function previous(): void { root.previousTrack() }
+    function next(): void { root.nextTrack() }
+  }
+
   function openYoutubeMusic() {
-    Quickshell.execDetached(["xdg-open", "https://music.youtube.com"])
+    for (var i = 0; i < appWindows.length; i++) {
+      var window = appWindows[i]
+      if (PlaybackModel.isAppWindow(window.lastIpcObject) && window.wayland) {
+        window.wayland.activate()
+        return
+      }
+    }
+    if (appLauncher.running) return
+    launchError = ""
+    appLauncher.command = [
+      "bash",
+      decodeURIComponent(Qt.resolvedUrl("launch.sh").toString().replace(/^file:\/\//, "")),
+      isolatedProfile ? "--isolated" : "--shared"
+    ]
+    appLauncher.running = true
+  }
+
+  Process {
+    id: appLauncher
+    stderr: StdioCollector { id: launchStderr }
+    onExited: function(exitCode, exitStatus) {
+      if (exitCode !== 0 || exitStatus !== 0) {
+        root.launchError = launchStderr.text.trim() || "Could not open YouTube Music. Check that a supported Chromium browser is installed."
+        root.open()
+      }
+    }
   }
 
   function formatTime(seconds) {
@@ -111,8 +157,18 @@ Panel {
     return minutes + ":" + (remainingSeconds < 10 ? "0" : "") + remainingSeconds
   }
 
-  Component.onCompleted: selectPlayer()
+  Component.onCompleted: {
+    windowInfoTimer.start()
+    updateAppPlayerPids()
+    selectPlayer()
+  }
   onPlayersChanged: selectPlayer()
+  onAppWindowsChanged: {
+    updateAppPlayerPids()
+    windowInfoTimer.restart()
+  }
+  onAppPlayerPidsChanged: selectPlayer()
+  onBrowserFallbackChanged: selectPlayer()
 
   Instantiator {
     model: root.players
@@ -123,10 +179,15 @@ Panel {
       required property var modelData
       target: modelData
 
+      function onReady() { root.selectPlayer() }
+      function onMetadataChanged() { root.selectPlayer() }
+      function onIdentityChanged() { root.selectPlayer() }
+      function onDesktopEntryChanged() { root.selectPlayer() }
       function onIsPlayingChanged() { root.selectPlayer() }
       function onTrackTitleChanged() { root.selectPlayer() }
       function onTrackArtistChanged() { root.selectPlayer() }
       function onTrackAlbumChanged() { root.selectPlayer() }
+      function onTrackArtUrlChanged() { root.selectPlayer() }
     }
   }
 
@@ -142,18 +203,19 @@ Panel {
     anchors.centerIn: parent
     spacing: 0
 
-    BarIconButton {
+    Ui.BarIconButton {
       id: panelButton
       bar: root.bar
       text: "󰗃"
-      tooltipText: root.player
-        ? root.trackTitle + (root.artistName ? " — " + root.artistName : "")
-        : "Open YouTube Music"
+      tooltipText: (root.player
+        ? root.trackTitle + (root.artistName ? " — " + root.artistName : "") + "\n"
+        : "") + "YouTube Music app · " + (root.isolatedProfile ? "separate browser profile" : "shared browser profile")
+        + "\nLeft-click: open app · Right-click: playback controls"
       active: root.opened
       onPressed: function(buttonCode) {
         if (buttonCode === Qt.MiddleButton) root.togglePlayback()
-        else if (buttonCode === Qt.RightButton) root.openYoutubeMusic()
-        else root.toggle()
+        else if (buttonCode === Qt.RightButton) root.toggle()
+        else root.openYoutubeMusic()
       }
       onWheelMoved: function(delta) {
         if (delta > 0) root.previousTrack()
@@ -163,13 +225,26 @@ Panel {
 
     Item {
       visible: root.player !== null && root.showTitle && !root.vertical
-      width: visible ? Math.min(root.maxTitleWidth, titleText.implicitWidth) + Style.space(8) : 0
+      width: visible ? Math.min(root.maxTitleWidth, titleMetrics.advanceWidth) + Style.space(8) : 0
       height: root.implicitHeight
+
+      TextMetrics {
+        id: titleMetrics
+        text: root.barLabel
+        font: titleText.font
+      }
+
+      TextMetrics {
+        id: artistMetrics
+        text: root.artistName
+        font: titleText.font
+      }
 
       Text {
         id: titleText
         anchors.left: parent.left
-        anchors.right: parent.right
+        anchors.right: artistText.visible ? artistSeparator.left : parent.right
+        anchors.rightMargin: artistText.visible ? Style.space(4) : 0
         anchors.verticalCenter: parent.verticalCenter
         textFormat: Text.PlainText
         text: root.trackTitle
@@ -179,17 +254,42 @@ Panel {
         elide: Text.ElideRight
       }
 
+      Text {
+        id: artistSeparator
+        visible: artistText.visible
+        anchors.right: artistText.left
+        anchors.rightMargin: Style.space(4)
+        anchors.verticalCenter: parent.verticalCenter
+        text: "—"
+        color: root.barColor
+        font: titleText.font
+      }
+
+      Text {
+        id: artistText
+        visible: root.artistName !== ""
+        width: visible ? Math.min(artistMetrics.advanceWidth, parent.width * 0.45) : 0
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        textFormat: Text.PlainText
+        text: root.artistName
+        color: root.barColor
+        opacity: 0.85
+        font: titleText.font
+        elide: Text.ElideRight
+      }
+
       MouseArea {
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
-        onEntered: if (root.bar) root.bar.showTooltip(parent, root.trackTitle + (root.artistName ? " — " + root.artistName : ""))
+        onEntered: if (root.bar) root.bar.showTooltip(parent, root.barLabel)
         onExited: if (root.bar) root.bar.hideTooltip(parent)
         onClicked: function(mouse) {
           if (mouse.button === Qt.MiddleButton) root.togglePlayback()
-          else if (mouse.button === Qt.RightButton) root.openYoutubeMusic()
-          else root.toggle()
+          else if (mouse.button === Qt.RightButton) root.toggle()
+          else root.openYoutubeMusic()
         }
         onWheel: function(wheel) {
           if (wheel.angleDelta.y > 0) root.previousTrack()
@@ -198,7 +298,7 @@ Panel {
       }
     }
 
-    BarIconButton {
+    Ui.BarIconButton {
       visible: root.player !== null
       bar: root.bar
       text: "󰒮"
@@ -208,7 +308,7 @@ Panel {
       onPressed: root.previousTrack()
     }
 
-    BarIconButton {
+    Ui.BarIconButton {
       visible: root.player !== null
       bar: root.bar
       text: root.playing ? "󰏤" : "󰐊"
@@ -218,7 +318,7 @@ Panel {
       onPressed: root.togglePlayback()
     }
 
-    BarIconButton {
+    Ui.BarIconButton {
       visible: root.player !== null
       bar: root.bar
       text: "󰒭"
@@ -229,7 +329,7 @@ Panel {
     }
   }
 
-  KeyboardPanel {
+  Ui.KeyboardPanel {
     id: popup
     anchorItem: panelButton
     owner: root
@@ -237,10 +337,10 @@ Panel {
     open: root.opened
     centerOnBar: true
     focusTarget: keyCatcher
-    contentWidth: popup.fittedContentWidth(Style.space(root.player ? 360 : 250))
+    contentWidth: popup.fittedContentWidth(Style.space(360))
     contentHeight: popup.fittedContentHeight(contentColumn.implicitHeight)
 
-    PanelKeyCatcher {
+    Ui.PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
 
@@ -264,12 +364,63 @@ Panel {
         anchors.horizontalCenter: parent.horizontalCenter
         spacing: Style.space(10)
 
+        RowLayout {
+          width: parent.width
+          spacing: Style.space(12)
+
+          Column {
+            Layout.fillWidth: true
+            spacing: Style.space(4)
+
+            Text {
+              width: parent.width
+              text: "YouTube Music app"
+              color: root.contentForeground
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.subtitle
+              font.bold: true
+              elide: Text.ElideRight
+            }
+
+            Text {
+              width: parent.width
+              text: root.isolatedProfile ? "Separate browser profile" : "Shared browser profile"
+              color: root.dimForeground
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+
+          Ui.Button {
+            text: "Open app"
+            foreground: root.contentForeground
+            onClicked: root.openYoutubeMusic()
+          }
+        }
+
+        Ui.PanelSeparator {
+          width: parent.width
+          foreground: root.contentForeground
+        }
+
+        Text {
+          visible: root.launchError !== ""
+          width: parent.width
+          textFormat: Text.PlainText
+          text: root.launchError
+          color: root.contentForeground
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.body
+          wrapMode: Text.WordWrap
+        }
+
         Row {
           visible: root.player !== null
           width: parent.width
           spacing: Style.space(12)
 
-          BorderSurface {
+          Ui.BorderSurface {
             id: cover
             width: Style.space(88)
             height: width
@@ -349,7 +500,7 @@ Panel {
           width: parent.width
           spacing: Style.space(2)
 
-          PanelSlider {
+          Ui.PanelSlider {
             id: progressSlider
             width: parent.width
             bar: root.bar
@@ -357,10 +508,12 @@ Panel {
             maximum: root.player ? Math.max(1, root.player.length) : 1
             value: root.player ? root.player.position : 0
             step: 5
+            enabled: root.player !== null && root.player.canSeek && root.player.length > 0
+            opacity: enabled ? 1 : 0.45
             trackHeight: Math.max(3, Style.space(3))
             knobSize: Style.space(10)
             onReleased: function(nextPosition) {
-              if (root.player && root.player.length > 0) root.player.position = nextPosition
+              if (root.player && root.player.canSeek && root.player.length > 0) root.player.position = nextPosition
             }
           }
 
@@ -394,7 +547,7 @@ Panel {
             anchors.centerIn: parent
             spacing: Style.space(14)
 
-            PanelActionButton {
+            Ui.PanelActionButton {
               iconText: "󰒮"
               tooltipText: "Previous track"
               foreground: root.contentForeground
@@ -405,7 +558,7 @@ Panel {
               onClicked: root.previousTrack()
             }
 
-            PanelActionButton {
+            Ui.PanelActionButton {
               iconText: root.playing ? "󰏤" : "󰐊"
               tooltipText: root.playing ? "Pause" : "Play"
               foreground: Color.accent
@@ -417,7 +570,7 @@ Panel {
               onClicked: root.togglePlayback()
             }
 
-            PanelActionButton {
+            Ui.PanelActionButton {
               iconText: "󰒭"
               tooltipText: "Next track"
               foreground: root.contentForeground
@@ -437,19 +590,16 @@ Panel {
 
           Text {
             width: parent.width
-            text: "YouTube Music is idle"
+            text: root.appPlayerPids.length > 0
+              ? "Start a song in the app to enable playback controls."
+              : "Open the app and start a song to enable playback controls."
             color: root.dimForeground
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.body
             horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
           }
 
-          Button {
-            anchors.horizontalCenter: parent.horizontalCenter
-            text: "Open YouTube Music"
-            foreground: root.contentForeground
-            onClicked: root.openYoutubeMusic()
-          }
         }
 
         Text {

@@ -4,6 +4,10 @@ set -euo pipefail
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_dir"
 
+bash -n launch.sh
+python3 tests/launcher.py
+node tests/playback.js
+
 omarchy plugin validate .
 jq -e . manifest.json >/dev/null
 
