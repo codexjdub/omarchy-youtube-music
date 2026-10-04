@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import Quickshell
 import Quickshell.Io
 import Quickshell.Hyprland
 import Quickshell.Services.Mpris
@@ -121,29 +122,34 @@ Ui.Panel {
   }
 
   function openYoutubeMusic() {
-    for (var i = 0; i < appWindows.length; i++) {
-      var window = appWindows[i]
-      if (PlaybackModel.isAppWindow(window.lastIpcObject) && window.wayland) {
-        window.wayland.activate()
-        return
-      }
-    }
     if (appLauncher.running) return
     launchError = ""
     appLauncher.command = [
       "bash",
       decodeURIComponent(Qt.resolvedUrl("launch.sh").toString().replace(/^file:\/\//, "")),
-      isolatedProfile ? "--isolated" : "--shared"
+      isolatedProfile ? "--isolated" : "--shared",
+      "--prepare"
     ]
     appLauncher.running = true
   }
 
   Process {
     id: appLauncher
+    stdout: StdioCollector { id: launchStdout }
     stderr: StdioCollector { id: launchStderr }
     onExited: function(exitCode, exitStatus) {
       if (exitCode !== 0 || exitStatus !== 0) {
         root.launchError = launchStderr.text.trim() || "Could not open YouTube Music. Check that a supported Chromium browser is installed."
+        root.open()
+        return
+      }
+      try {
+        var command = JSON.parse(launchStdout.text)
+        if (!Array.isArray(command) || !command.every(function(arg) { return typeof arg === "string" }))
+          throw new Error("Invalid launcher response")
+        if (command.length > 0) Quickshell.execDetached(command)
+      } catch (error) {
+        root.launchError = "Could not prepare the YouTube Music app: " + error
         root.open()
       }
     }

@@ -37,6 +37,10 @@ associated with a Google account can still be stored by Google.
 
 Turn off `isolatedProfile` explicitly to use the normal browser profile instead.
 Launch failures never automatically switch to the shared profile.
+Existing windows are reused only after checking that their browser process
+uses the intended isolated profile. An unverified window is left alone.
+The app runs independently of the bar, so reloading or restarting the shell
+keeps it open.
 
 App windows use Omarchy's supported default browser (Chrome, Brave, Edge,
 Opera, Vivaldi, or Helium), falling back to Chromium for other defaults.
@@ -100,6 +104,9 @@ The check tests isolated/shared launching without starting a browser, and runs
 Omarchy's manifest validator and Qt's QML parser. It also runs
 `qmllint` when available; framework import-path warnings are expected when
 linting a dynamically loaded third-party plugin outside the shell host.
+The app-lifetime regression uses a headless Quickshell instance and a mock
+browser to verify that playback processes survive configuration reload and
+shell shutdown.
 
 ## How detection works
 
